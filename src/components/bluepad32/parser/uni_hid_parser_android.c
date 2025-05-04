@@ -218,18 +218,51 @@ void uni_hid_parser_android_parse_usage(uni_hid_device_t* d,
     }
 }
 
+void uni_hid_parser_android_device_dump(struct uni_hid_device_s* d) {
+    ARG_UNUSED(d);
+
+    logi("\tuni_hid_parser_android_device_dump: implement me: \n");
+}
+
+//void uni_hid_parser_android_set_leds(struct uni_hid_device_s* d, uint8_t led_bitmask) {
 void uni_hid_parser_android_set_player_leds(uni_hid_device_t* d, uint8_t leds) {
-#if 0
-  static uint8_t report_id = 0;
-  logi("using report id = 0x%02x\n", report_id);
-  uint8_t report[] = {0xa2, 0, 0x00 /* LED */};
-  report[2] = 0x02; /* d->joystick_port; */
-  report[1] = report_id++;
-  uni_hid_device_queue_report(d, report, sizeof(report));
-  report[0] = 0x52;
-  uni_hid_device_queue_report(d, report, sizeof(report));
+#if defined(ENABLE_PLAYER_LED_EXPERIMENT)
+/*
+    static uint8_t report_id = 0;
+    logi("using report id = 0x%02x\n", report_id);
+    uint8_t report[] = {0xa2, 0, 0x00 /* LED */};
+    report[2] = 0x02; /* d->joystick_port; */
+    report[1] = report_id++;
+    uni_hid_device_queue_report(d, report, sizeof(report));
+    report[0] = 0x52;
+    uni_hid_device_queue_report(d, report, sizeof(report));
+*/
+    uint8_t status;
+    gap_connection_type_t type;
+
+    if (!d) {
+        loge("Android: Invalid device\n");
+        return;
+    }
+
+    type = gap_get_connection_type(d->conn.handle);
+
+    if (type == GAP_CONNECTION_LE) {
+        // TODO: Which is the report Id ? Is it always 1 ?
+        status = hids_client_send_write_report(d->hids_cid, 1, HID_REPORT_TYPE_OUTPUT, &led_bitmask, 1);
+        // TODO: If error, it should retry
+        if (status != ERROR_CODE_SUCCESS)
+            logi("Android: Failed to send LED report, error=%#x\n", status);
+    } else {
+        logi("Android: Set LED report not implemented for BR/EDR yet\n");
+    }
 #else
     ARG_UNUSED(d);
     ARG_UNUSED(leds);
 #endif
+}
+
+// Helpers
+static android_instance_t* get_android_instance(uni_hid_device_t* d) {
+    return (android_instance_t*)&d->parser_data[0];
 }
