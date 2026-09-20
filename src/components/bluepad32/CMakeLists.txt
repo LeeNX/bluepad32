@@ -28,6 +28,7 @@ set(srcs
          "parser/uni_hid_parser_nimbus.c"
          "parser/uni_hid_parser_ouya.c"
          "parser/uni_hid_parser_psmove.c"
+         "parser/uni_hid_parser_sinput.c"
          "parser/uni_hid_parser_smarttvremote.c"
          "parser/uni_hid_parser_stadia.c"
          "parser/uni_hid_parser_steam.c"
