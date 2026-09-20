@@ -7,6 +7,9 @@
 #include <string.h>
 
 #include "bt/uni_bt_service.gatt.h"
+#ifdef CONFIG_BLUEPAD32_OTA
+#include "uni_ota.h"
+#endif
 #include "sdkconfig.h"
 #include "uni_common.h"
 #include "uni_log.h"
@@ -210,6 +213,9 @@ void uni_bt_nus_on_disconnected(hci_con_handle_t handle) {
     if (!c)
         return;
     bool was_subscribed = c->subscribed;
+#ifdef CONFIG_BLUEPAD32_OTA
+    uni_ota_on_client_disconnected(handle);
+#endif
     memset(c, 0, sizeof(*c));
     c->handle = HCI_CON_HANDLE_INVALID;
     logi("NuS: client disconnected, handle=%#x\n", handle);

@@ -148,6 +148,11 @@ endif()
 if(IDF_TARGET)
     set(requires "nvs_flash" "btstack" "app_update" "esp_timer" "driver")
 
+    if(CONFIG_BLUEPAD32_OTA)
+        list(APPEND srcs "uni_ota.c")
+        list(APPEND requires "mbedtls")
+    endif()
+
     if("${IDF_VERSION_MAJOR}" GREATER_EQUAL 5)
         list(APPEND requires "cmd_nvs" "cmd_system" "esp_driver_ledc" "esp_driver_spi")
     else()

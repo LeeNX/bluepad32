@@ -137,6 +137,80 @@ menu "Bluepad32"
         help
         Bytes that don't fit while a client is slow to receive are dropped.
 
+    menuconfig BLUEPAD32_OTA
+        bool "Over-the-air firmware update over the Nordic UART Service"
+        default n
+        help
+        Lets a BLE central update the firmware over NuS, see uni_ota.h. The application needs a partition table with
+        two OTA app slots (ota_0 and ota_1) and an otadata partition.
+
+        Enabling this without BLUEPAD32_OTA_ALLOW_AUTH (with a key) or BLUEPAD32_OTA_ALLOW_UNAUTH leaves OTA
+        unusable, but still confirms a newly booted image so the bootloader doesn't roll it back.
+
+    if BLUEPAD32_OTA
+
+    config BLUEPAD32_OTA_ALLOW_AUTH
+        bool "Allow authenticated OTA (pre-shared key)"
+        default y
+        help
+        The client proves knowledge of BLUEPAD32_OTA_PSK with an HMAC-SHA256 over a device-issued nonce, the image
+        size and the image's SHA-256.
+
+    config BLUEPAD32_OTA_PSK
+        string "OTA pre-shared key"
+        default ""
+        depends on BLUEPAD32_OTA_ALLOW_AUTH
+        help
+        Authenticated OTA is disabled while this is empty. Anyone with the firmware binary can read it, so it only
+        keeps out people without access to the image. Use a per-device key, and sign images for real protection.
+
+    config BLUEPAD32_OTA_ALLOW_UNAUTH
+        bool "Allow unauthenticated OTA (needs arming)"
+        default n
+        help
+        Any BLE central in range can push firmware while OTA is armed. Arming needs a physical action
+        (BLUEPAD32_OTA_BUTTON_GPIO, or the platform calling uni_ota_arm()).
+
+    config BLUEPAD32_OTA_REQUIRE_ARM_FOR_AUTH
+        bool "Authenticated OTA also needs arming"
+        default y
+        help
+        Unauthenticated OTA always needs arming. With this set, authenticated OTA does too.
+
+    config BLUEPAD32_OTA_ARM_SECONDS
+        int "How long OTA stays armed"
+        range 5 3600
+        default 120
+
+    config BLUEPAD32_OTA_BUTTON_GPIO
+        int "GPIO of the OTA arm button (-1 = none)"
+        range -1 48
+        default -1
+        help
+        Hold the button for BLUEPAD32_OTA_BUTTON_HOLD_MS to arm OTA. Platforms without a spare GPIO can call
+        uni_ota_arm() instead, e.g. from a gamepad button chord.
+
+    config BLUEPAD32_OTA_BUTTON_ACTIVE_LOW
+        bool "OTA arm button is active low"
+        default y
+        depends on BLUEPAD32_OTA_BUTTON_GPIO >= 0
+
+    config BLUEPAD32_OTA_BUTTON_HOLD_MS
+        int "How long to hold the OTA arm button, in ms"
+        range 100 10000
+        default 1500
+        depends on BLUEPAD32_OTA_BUTTON_GPIO >= 0
+
+    config BLUEPAD32_OTA_AUTO_CONFIRM_SEC
+        int "Confirm a newly booted image after this many seconds (0 = the application does it)"
+        range 0 600
+        default 15
+        help
+        Needs CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE. If the new image resets before it is confirmed, the bootloader
+        goes back to the previous one.
+
+    endif # BLUEPAD32_OTA
+
     config BLUEPAD32_MAX_ALLOWLIST
         int  "Maximum size of the Bluetooth allowlist"
         default 4
