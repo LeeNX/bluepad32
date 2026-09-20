@@ -18,6 +18,9 @@
 #include "uni_common.h"
 #include "uni_config.h"
 #include "uni_log.h"
+#ifdef CONFIG_BLUEPAD32_OTA
+#include "uni_ota.h"
+#endif
 
 typedef enum {
     SETUP_STATE_BTSTACK_IN_PROGRESS,
@@ -78,6 +81,11 @@ static void setup_call_next_fn(void) {
 
         // Populate global variable here, and just once.
         gap_local_bd_addr(uni_local_bd_addr);
+
+#ifdef CONFIG_BLUEPAD32_OTA
+        // Confirms a freshly OTA-updated image, so the bootloader doesn't roll it back.
+        uni_ota_init();
+#endif
 
         // Only after all BT setup is done, call on_init_complete()
         uni_get_platform()->on_init_complete();
