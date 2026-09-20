@@ -476,7 +476,8 @@ static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_
 void uni_bt_service_update_advertising(void) {
     if (!service_enabled)
         return;
-    gap_advertisements_enable(uni_bt_nus_has_free_slot() && uni_bt_nus_gate_is_open());
+    gap_advertisements_enable(uni_bt_nus_has_free_slot() && uni_bt_nus_gate_is_open() &&
+                              !uni_bt_nus_advertising_paused());
 }
 
 void uni_bt_service_deinit(void) {
