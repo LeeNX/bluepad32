@@ -130,6 +130,9 @@ menu "Bluepad32"
         time, in addition to the gamepads. Each one needs a BLE connection, so keep
         CONFIG_BTDM_CTRL_BLE_MAX_CONN >= BLUEPAD32_MAX_DEVICES + this value.
 
+        The NuS code runs on the BTstack thread, which is the "main" task. Give it room: keep
+        CONFIG_ESP_MAIN_TASK_STACK_SIZE at 6144 or more.
+
     config BLUEPAD32_BLE_NUS_TX_BUFFER_SIZE
         int "Nordic UART Service TX buffer size, per client"
         range 128 4096

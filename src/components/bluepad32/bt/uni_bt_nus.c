@@ -72,8 +72,9 @@ static void on_can_send(void* context) {
         return;
 
     uint16_t n = c->tx_len < c->payload ? c->tx_len : c->payload;
-    // Copy out of the ring buffer; a chunk can wrap around.
-    uint8_t chunk[256];
+    // Copy out of the ring buffer; a chunk can wrap around. Static: this runs on the BTstack thread only, and the
+    // BTstack thread's stack (the "main" task) is small.
+    static uint8_t chunk[256];
     if (n > sizeof(chunk))
         n = sizeof(chunk);
     for (uint16_t i = 0; i < n; i++)
