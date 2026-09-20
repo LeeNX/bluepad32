@@ -64,11 +64,7 @@
 #define MAX_CHUNK 239
 // Bytes the client may send before it has to wait for an ack. Bigger is faster; the client's write-without-response
 // queue and our flash writes are the limit.
-#define ACK_WINDOW 16384
-// A transfer wants a short connection interval: 12 * 1.25 ms = 15 ms, no slave latency, 4 s supervision timeout.
-#define TRANSFER_CONN_INTERVAL 12
-#define TRANSFER_CONN_LATENCY 0
-#define TRANSFER_CONN_TIMEOUT 400
+#define ACK_WINDOW 8192
 #define NONCE_LEN 32
 #define NONCE_LIFETIME_MS 30000
 #define REBOOT_DELAY_MS 1500
@@ -393,10 +389,6 @@ static void cmd_begin(hci_con_handle_t client, char* size_s, char* sha_s, char* 
     memcpy(g.expected_sha, sha, sizeof(sha));
     mbedtls_sha256_init(&g.sha);
     mbedtls_sha256_starts(&g.sha, 0);
-    // Ask the central for a faster link for the transfer. It may or may not agree.
-    if (client != HCI_CON_HANDLE_INVALID)
-        gap_request_connection_parameter_update(client, TRANSFER_CONN_INTERVAL, TRANSFER_CONN_INTERVAL,
-                                                TRANSFER_CONN_LATENCY, TRANSFER_CONN_TIMEOUT);
     reply(client, "OTA ready chunk=%u window=%u\n", chunk, ACK_WINDOW);
 }
 
