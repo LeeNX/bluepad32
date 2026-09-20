@@ -121,6 +121,20 @@ menu "Bluepad32"
             then the Swap button might trigger unexpectedly.
             So, unless you are using FlashParty Edition, leave this feature enabled.
 
+    config BLUEPAD32_BLE_SERVICE_NAME
+        string "Advertised BLE name of the BLE service (max 8 characters)"
+        default "BP32"
+        help
+        The name a BLE scanner shows for this device. Give each product its own, so it isn't mistaken for another
+        Bluepad32 device. It shares the 31-byte advertising packet with the flags and the service UUID, hence the
+        limit of 8 characters.
+
+    config BLUEPAD32_BLE_GAP_NAME
+        string "GAP device name of the BLE service"
+        default "Bluepad32"
+        help
+        The Device Name characteristic, what a client reads once connected.
+
     config BLUEPAD32_BLE_NUS_MAX_CLIENTS
         int "Maximum number of BLE centrals connected to the Nordic UART Service"
         range 1 4
