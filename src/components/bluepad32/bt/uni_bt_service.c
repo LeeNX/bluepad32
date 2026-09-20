@@ -6,6 +6,8 @@
 
 #include <btstack.h>
 
+#include "sdkconfig.h"
+
 #include "bt/uni_bt.h"
 #include "bt/uni_bt_allowlist.h"
 #include "bt/uni_bt_le.h"
@@ -491,6 +493,10 @@ void uni_bt_service_init(void) {
 
     // Setup ATT server.
     att_server_init(profile_data, uni_att_read_callback, uni_att_write_callback);
+
+    // BTstack allows one connection in the peripheral role by default, and stops advertising once it has it. NuS is
+    // meant for several centrals at once (a phone next to a test rig), so allow as many as it has slots for.
+    gap_set_max_number_peripheral_connections(CONFIG_BLUEPAD32_BLE_NUS_MAX_CLIENTS);
 
     // setup advertisements
     uint16_t adv_int_min = 0x0030;
