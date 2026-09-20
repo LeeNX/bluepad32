@@ -101,6 +101,11 @@ static void resume_scanning_hint(void) {
     }
 }
 
+// True when a central connected to us (the BLE service), as opposed to a gamepad that we connected to.
+static bool is_peripheral_link(hci_con_handle_t con_handle) {
+    return gap_get_role(con_handle) == HCI_ROLE_SLAVE;
+}
+
 static void hog_disconnect(hci_con_handle_t con_handle) {
     // MUST not call uni_hid_device_disconnect(), called from it.
     uint8_t status;
@@ -632,11 +637,13 @@ static void uni_sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
                     break;
                 case ERROR_CODE_CONNECTION_TIMEOUT:
                     logi("Re-encryption failed, timeout\n");
-                    hog_disconnect(con_handle);
+                    if (!is_peripheral_link(con_handle))
+                        hog_disconnect(con_handle);
                     break;
                 case ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION:
                     logi("Re-encryption failed, disconnected\n");
-                    hog_disconnect(con_handle);
+                    if (!is_peripheral_link(con_handle))
+                        hog_disconnect(con_handle);
                     break;
                 case ERROR_CODE_PIN_OR_KEY_MISSING:
                     logi("Re-encryption failed, bonding information missing\n\n");
@@ -656,6 +663,12 @@ static void uni_sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
             device = uni_hid_device_get_instance_for_address(addr);
             con_handle = sm_event_pairing_complete_get_handle(packet);
             if (!device) {
+                if (is_peripheral_link(con_handle)) {
+                    // A central that connected to the BLE service (e.g. NuS), not one of our gamepads.
+                    logi("Pairing complete with BLE service client %s, status=%#x\n", bd_addr_to_str(addr),
+                         sm_event_pairing_complete_get_status(packet));
+                    break;
+                }
                 loge("SM_EVENT_PAIRING_COMPLETE: Invalid device for addr %s\n", bd_addr_to_str(addr));
                 hog_disconnect(con_handle);
                 break;
@@ -721,6 +734,11 @@ void uni_bt_le_on_hci_event_le_meta(const uint8_t* packet, uint16_t size) {
             hci_subevent_le_connection_complete_get_peer_address(packet, event_addr);
             device = uni_hid_device_get_instance_for_address(event_addr);
             if (!device) {
+                if (hci_subevent_le_connection_complete_get_role(packet) == HCI_ROLE_SLAVE) {
+                    // A central connected to our BLE service (e.g. NuS). Not a gamepad.
+                    logi("BLE service client connected: %s\n", bd_addr_to_str(event_addr));
+                    break;
+                }
                 loge("uni_bt_le_on_connection_complete: Device not found for addr: %s\n", bd_addr_to_str(event_addr));
                 break;
             }
