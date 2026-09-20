@@ -59,18 +59,39 @@ static compact_device_t compact_devices[CONFIG_BLUEPAD32_MAX_DEVICES];
 static bool service_enabled;
 
 // clang-format off
-static const uint8_t adv_data[] = {
-    // Flags general discoverable
-    2, BLUETOOTH_DATA_TYPE_FLAGS, APP_AD_FLAGS,
-    // Name
-    5, BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME,'B', 'P', '3', '2',
-    // 4627C4A4-AC00-46B9-B688-AFC5C1BF7F63
-    17, BLUETOOTH_DATA_TYPE_COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
-    0x63, 0x7F, 0xBF, 0xC1, 0xC5, 0xAF, 0x88, 0xB6, 0xB9, 0x46, 0x00, 0xAC, 0xA4, 0xC4, 0x27, 0x46,
-};
-_Static_assert(sizeof(adv_data) <= 31, "adv_data too big");
-// clang-format on
+#ifndef CONFIG_BLUEPAD32_BLE_SERVICE_NAME
+#define CONFIG_BLUEPAD32_BLE_SERVICE_NAME "BP32"
+#endif
+#ifndef CONFIG_BLUEPAD32_BLE_GAP_NAME
+#define CONFIG_BLUEPAD32_BLE_GAP_NAME "Bluepad32"
+#endif
+#define ADV_NAME_LEN (sizeof(CONFIG_BLUEPAD32_BLE_SERVICE_NAME) - 1)
+// flags (3) + name (2 + n) + 128-bit service UUID (18) must fit the 31-byte legacy advertising packet.
+_Static_assert(3 + 2 + ADV_NAME_LEN + 18 <= 31, "CONFIG_BLUEPAD32_BLE_SERVICE_NAME is too long (max 8 characters)");
+
+static uint8_t adv_data[3 + 2 + ADV_NAME_LEN + 18];
 static const int adv_data_len = sizeof(adv_data);
+
+static void build_adv_data(void) {
+    static const uint8_t uuid[16] = {
+        // 4627C4A4-AC00-46B9-B688-AFC5C1BF7F63
+        0x63, 0x7F, 0xBF, 0xC1, 0xC5, 0xAF, 0x88, 0xB6, 0xB9, 0x46, 0x00, 0xAC, 0xA4, 0xC4, 0x27, 0x46,
+    };
+    uint8_t* p = adv_data;
+    // Flags general discoverable
+    *p++ = 2;
+    *p++ = BLUETOOTH_DATA_TYPE_FLAGS;
+    *p++ = APP_AD_FLAGS;
+    // Name
+    *p++ = (uint8_t)(1 + ADV_NAME_LEN);
+    *p++ = BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME;
+    memcpy(p, CONFIG_BLUEPAD32_BLE_SERVICE_NAME, ADV_NAME_LEN);
+    p += ADV_NAME_LEN;
+    // Service UUID
+    *p++ = 17;
+    *p++ = BLUETOOTH_DATA_TYPE_COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS;
+    memcpy(p, uuid, sizeof(uuid));
+}
 
 // adv_data is nearly full, so the Nordic UART Service UUID (6E400001-B5A3-F393-E0A9-E50E24DCCA9E) goes in the scan
 // response.
@@ -280,6 +301,10 @@ static uint16_t uni_att_read_callback(hci_con_handle_t conn_handle,
     ARG_UNUSED(conn_handle);
 
     switch (att_handle) {
+        case ATT_CHARACTERISTIC_GAP_DEVICE_NAME_01_VALUE_HANDLE:
+            return att_read_callback_handle_blob((const uint8_t*)CONFIG_BLUEPAD32_BLE_GAP_NAME,
+                                                 (uint16_t)strlen(CONFIG_BLUEPAD32_BLE_GAP_NAME), offset, buffer,
+                                                 buffer_size);
         case ATT_CHARACTERISTIC_4627C4A4_AC01_46B9_B688_AFC5C1BF7F63_01_VALUE_HANDLE:
             // version
             return att_read_callback_handle_blob((const uint8_t*)uni_version, (uint16_t)strlen(uni_version), offset,
@@ -474,6 +499,7 @@ void uni_bt_service_init(void) {
     bd_addr_t null_addr = {0};
 
     uni_bt_nus_init();
+    build_adv_data();
     memset(compact_devices, 0, sizeof(compact_devices));
     memset(&client_connections, 0, sizeof(client_connections));
     for (int i = 0; i < MAX_NR_CLIENT_CONNECTIONS; i++)
