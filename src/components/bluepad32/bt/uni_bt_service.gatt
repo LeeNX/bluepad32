@@ -49,6 +49,16 @@ CHARACTERISTIC, 4627C4A4-AC0C-46B9-B688-AFC5C1BF7F63, WRITE | DYNAMIC
 // Reset device. DEBUG Only
 CHARACTERISTIC, 4627C4A4-AC0D-46B9-B688-AFC5C1BF7F63, WRITE | DYNAMIC
 
+// Nordic UART Service (NuS): a byte pipe for monitoring, diagnostics and firmware update.
+// Several BLE centrals can be connected at the same time, see uni_bt_nus.h.
+PRIMARY_SERVICE, 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+
+// RX: central -> Bluepad32
+CHARACTERISTIC, 6E400002-B5A3-F393-E0A9-E50E24DCCA9E, WRITE | WRITE_WITHOUT_RESPONSE | DYNAMIC
+
+// TX: Bluepad32 -> central
+CHARACTERISTIC, 6E400003-B5A3-F393-E0A9-E50E24DCCA9E, NOTIFY | DYNAMIC
+
 // add Battery Service
 #import <battery_service.gatt>
 

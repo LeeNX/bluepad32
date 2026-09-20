@@ -121,6 +121,22 @@ menu "Bluepad32"
             then the Swap button might trigger unexpectedly.
             So, unless you are using FlashParty Edition, leave this feature enabled.
 
+    config BLUEPAD32_BLE_NUS_MAX_CLIENTS
+        int "Maximum number of BLE centrals connected to the Nordic UART Service"
+        range 1 4
+        default 2
+        help
+        Several BLE centrals (a phone, a PC, a test rig) can be connected to the Nordic UART Service at the same
+        time, in addition to the gamepads. Each one needs a BLE connection, so keep
+        CONFIG_BTDM_CTRL_BLE_MAX_CONN >= BLUEPAD32_MAX_DEVICES + this value.
+
+    config BLUEPAD32_BLE_NUS_TX_BUFFER_SIZE
+        int "Nordic UART Service TX buffer size, per client"
+        range 128 4096
+        default 1024
+        help
+        Bytes that don't fit while a client is slow to receive are dropped.
+
     config BLUEPAD32_MAX_ALLOWLIST
         int  "Maximum size of the Bluetooth allowlist"
         default 4

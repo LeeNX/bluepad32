@@ -9,6 +9,7 @@
 #include "bt/uni_bt.h"
 #include "bt/uni_bt_allowlist.h"
 #include "bt/uni_bt_le.h"
+#include "bt/uni_bt_nus.h"
 #include "bt/uni_bt_service.gatt.h"
 #include "controller/uni_gamepad.h"
 #include "uni_common.h"
@@ -70,6 +71,15 @@ static const uint8_t adv_data[] = {
 _Static_assert(sizeof(adv_data) <= 31, "adv_data too big");
 // clang-format on
 static const int adv_data_len = sizeof(adv_data);
+
+// adv_data is nearly full, so the Nordic UART Service UUID (6E400001-B5A3-F393-E0A9-E50E24DCCA9E) goes in the scan
+// response.
+// clang-format off
+static const uint8_t scan_response_data[] = {
+    17, BLUETOOTH_DATA_TYPE_COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+    0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0, 0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E,
+};
+// clang-format on
 
 static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t* packet, uint16_t size);
 static int uni_att_write_callback(hci_con_handle_t con_handle,
@@ -153,6 +163,10 @@ static int uni_att_write_callback(hci_con_handle_t con_handle,
     //    printf_hexdump(buffer, buffer_size);
 
     client_connection_t* ctx;
+    int nus_result;
+
+    if (uni_bt_nus_on_write(con_handle, att_handle, buffer, buffer_size, &nus_result))
+        return nus_result;
 
     switch (att_handle) {
         case ATT_CHARACTERISTIC_4627C4A4_AC03_46B9_B688_AFC5C1BF7F63_01_VALUE_HANDLE: {
@@ -378,6 +392,11 @@ static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_
 
     switch (hci_event_packet_get_type(packet)) {
         case ATT_EVENT_CONNECTED:
+            uni_bt_nus_on_connected(att_event_connected_get_handle(packet));
+            // A peripheral stops advertising once connected. Keep going while more clients fit, so that a second
+            // host (e.g. a test rig) can connect while a gamepad, or another host, already is.
+            if (uni_bt_nus_has_free_slot())
+                gap_advertisements_enable(true);
             // setup new
             ctx = connection_for_conn_handle(HCI_CON_HANDLE_INVALID);
             if (!ctx)
@@ -387,6 +406,7 @@ static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_
             logi("BLE Service: New client connected handle = %#x, mtu = %d\n", ctx->connection_handle, mtu);
             break;
         case ATT_EVENT_MTU_EXCHANGE_COMPLETE:
+            uni_bt_nus_on_mtu(att_event_mtu_exchange_complete_get_handle(packet));
             mtu = att_event_mtu_exchange_complete_get_MTU(packet) - 3;
             ctx = connection_for_conn_handle(att_event_mtu_exchange_complete_get_handle(packet));
             if (!ctx)
@@ -397,6 +417,8 @@ static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_
             notify_client();
             break;
         case ATT_EVENT_DISCONNECTED:
+            uni_bt_nus_on_disconnected(att_event_disconnected_get_handle(packet));
+            gap_advertisements_enable(true);
             ctx = connection_for_conn_handle(att_event_disconnected_get_handle(packet));
             if (!ctx)
                 break;
@@ -444,6 +466,7 @@ void uni_bt_service_init(void) {
     uint8_t adv_type = 0;
     bd_addr_t null_addr = {0};
 
+    uni_bt_nus_init();
     memset(compact_devices, 0, sizeof(compact_devices));
     memset(&client_connections, 0, sizeof(client_connections));
     for (int i = 0; i < MAX_NR_CLIENT_CONNECTIONS; i++)
@@ -456,6 +479,7 @@ void uni_bt_service_init(void) {
 
     gap_advertisements_set_params(adv_int_min, adv_int_max, adv_type, 0, null_addr, 0x07, 0x00);
     gap_advertisements_set_data(adv_data_len, (uint8_t*)adv_data);
+    gap_scan_response_set_data(sizeof(scan_response_data), (uint8_t*)scan_response_data);
     gap_advertisements_enable(true);
 }
 
