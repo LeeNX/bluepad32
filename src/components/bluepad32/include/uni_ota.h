@@ -11,6 +11,10 @@
 //    size and its SHA-256).
 //  - Unauthenticated mode is only available if CONFIG_BLUEPAD32_OTA_ALLOW_UNAUTH is set, and still needs arming.
 //  - The SHA-256 of the whole image is checked before the boot partition is switched.
+//  - Factory reset (uni_ota_factory_reset(), "ota factory-reset", or a long button hold): back to the factory app,
+//    or the first OTA slot if the partition table has no factory app, with stored settings (Bluetooth bonds, the
+//    access-gate latch) erased. The command follows the same arming and authentication policy as an update.
+//  - Arming opens the BLE access gate (uni_bt_nus.h), and a transfer holds it open.
 //  - With the bootloader's app rollback enabled, a new image must call uni_ota_mark_valid() (done automatically after
 //    CONFIG_BLUEPAD32_OTA_AUTO_CONFIRM_SEC seconds) or the previous one is restored on the next reset.
 //
@@ -22,6 +26,7 @@
 //     ota begin <size> <sha256 hex> [<hmac hex>]     hmac = HMAC-SHA256(psk, nonce || "<size>" || "<sha256 hex>")
 //     ota end
 //     ota abort
+//     ota factory-reset [<hmac>]                     hmac = HMAC-SHA256(psk, nonce || "factory-reset")
 //   client -> device, binary (one NuS write each), passed to uni_ota_handle_frame():
 //     0xB3, offset (u32 LE), payload...
 //   device -> requesting client, text lines:
@@ -30,6 +35,7 @@
 //     OTA ready chunk=<max payload> window=<bytes>
 //     OTA ack <next offset>
 //     OTA done                                          (the device reboots shortly after)
+//     OTA done factory-reset mode=<factory|settings>    (the device reboots shortly after)
 //     OTA err <reason>
 
 #ifndef UNI_OTA_H
@@ -57,6 +63,10 @@ bool uni_ota_handle_frame(hci_con_handle_t client, const uint8_t* data, uint16_t
 
 // A NuS client went away: abort its transfer, if any.
 void uni_ota_on_client_disconnected(hci_con_handle_t client);
+
+// Erase otadata (so the bootloader runs the factory app) and NVS, then reboot. Returns false if erasing failed.
+// Call it from a physical action or an authenticated path only.
+bool uni_ota_factory_reset(void);
 
 // Confirm the running image (cancel rollback). Safe to call when rollback isn't pending.
 void uni_ota_mark_valid(void);

@@ -248,6 +248,15 @@ menu "Bluepad32"
         default 1500
         depends on BLUEPAD32_OTA_BUTTON_GPIO >= 0
 
+    config BLUEPAD32_OTA_FACTORY_RESET_HOLD_MS
+        int "Hold the OTA arm button this long for a factory reset, in ms (0 = disabled)"
+        range 0 60000
+        default 10000
+        depends on BLUEPAD32_OTA_BUTTON_GPIO >= 0
+        help
+        Boots the factory app (or the first OTA slot if there is no factory app) and erases stored settings.
+        Needs to be well above BLUEPAD32_OTA_BUTTON_HOLD_MS.
+
     config BLUEPAD32_OTA_AUTO_CONFIRM_SEC
         int "Confirm a newly booted image after this many seconds (0 = the application does it)"
         range 0 600
