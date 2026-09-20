@@ -46,6 +46,31 @@ uint32_t uni_bt_nus_dropped_bytes(void);
 // Usable payload per notification for `client` (ATT MTU - 3), 0 if unknown.
 uint16_t uni_bt_nus_payload_size(hci_con_handle_t client);
 
+// --- Access gate ---
+//
+// Anything that can connect to the BLE service (NuS, OTA, Bluepad32's own configuration characteristics) is a way in
+// for someone nearby. With CONFIG_BLUEPAD32_BLE_NUS_GATE (the default) the whole peripheral role is closed: the device
+// does not advertise and cannot be connected to, until a physical action opens the gate:
+//   - a switch (CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO): open for as long as the switch is on;
+//   - a button (CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO): hold it to open the gate for
+//     CONFIG_BLUEPAD32_BLE_NUS_OPEN_SECONDS;
+//   - the platform calling uni_bt_nus_gate_open(), e.g. from a gamepad button chord;
+//   - a latch: uni_bt_nus_gate_set_latch(true) keeps it open across reboots, until cleared.
+// When it closes, every connected central is disconnected. Gamepad connections are not affected.
+// Without CONFIG_BLUEPAD32_BLE_NUS_GATE the gate is always open.
+bool uni_bt_nus_gate_is_open(void);
+// Open for `seconds` (0 = until uni_bt_nus_gate_close()). Extends an open window, never shortens it.
+void uni_bt_nus_gate_open(uint32_t seconds);
+// Close now, clearing the window and the latch. A switch that is still on, or a hold, keeps it open.
+void uni_bt_nus_gate_close(void);
+// Persist "keep open" across reboots.
+void uni_bt_nus_gate_set_latch(bool latched);
+bool uni_bt_nus_gate_is_latched(void);
+// Keep the gate open while something long-running (a firmware transfer) is going on.
+void uni_bt_nus_gate_hold(bool hold);
+// Seconds left in the current window (0 if none, or if it is open for another reason).
+uint32_t uni_bt_nus_gate_seconds_left(void);
+
 // --- Used by uni_bt_service.c ---
 void uni_bt_nus_init(void);
 void uni_bt_nus_on_connected(hci_con_handle_t handle);

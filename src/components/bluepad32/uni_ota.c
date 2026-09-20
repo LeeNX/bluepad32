@@ -12,6 +12,8 @@
 
 #include <driver/gpio.h>
 #include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include <nvs_flash.h>
 #include <esp_random.h>
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
@@ -30,6 +32,9 @@
 #endif
 #ifndef CONFIG_BLUEPAD32_OTA_BUTTON_HOLD_MS
 #define CONFIG_BLUEPAD32_OTA_BUTTON_HOLD_MS 1500
+#endif
+#ifndef CONFIG_BLUEPAD32_OTA_FACTORY_RESET_HOLD_MS
+#define CONFIG_BLUEPAD32_OTA_FACTORY_RESET_HOLD_MS 10000
 #endif
 #ifndef CONFIG_BLUEPAD32_OTA_AUTO_CONFIRM_SEC
 #define CONFIG_BLUEPAD32_OTA_AUTO_CONFIRM_SEC 15
@@ -93,6 +98,7 @@ static btstack_timer_source_t confirm_timer;
 static btstack_timer_source_t button_timer;
 static uint32_t button_held_ms;
 static bool button_fired;
+static bool button_factory_fired;
 
 static void reply(hci_con_handle_t client, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 static void reply(hci_con_handle_t client, const char* fmt, ...) {
@@ -142,7 +148,8 @@ static bool ct_equal(const uint8_t* a, const uint8_t* b, size_t len) {
 static void on_arm_tick(btstack_timer_source_t* ts) {
     if (!g.armed)
         return;
-    if (g.arm_left_s > 0)
+    // Arming only has to last until a transfer starts. Never pull it out from under one.
+    if (g.arm_left_s > 0 && g.state != STATE_RECEIVING)
         g.arm_left_s--;
     if (g.arm_left_s == 0) {
         g.armed = false;
@@ -164,6 +171,8 @@ void uni_ota_arm(uint32_t seconds) {
     btstack_run_loop_set_timer(&arm_timer, 1000);
     btstack_run_loop_add_timer(&arm_timer);
     logi("OTA: armed for %us\n", (unsigned)seconds);
+    // OTA needs a way in. Arming is a physical action, so it also opens the BLE access gate for as long.
+    uni_bt_nus_gate_open(seconds);
     uni_bt_nus_printf(HCI_CON_HANDLE_INVALID, "OTA armed %us\n", (unsigned)seconds);
 }
 
@@ -194,9 +203,17 @@ static void on_button_poll(btstack_timer_source_t* ts) {
             button_fired = true;
             uni_ota_arm(0);
         }
+        // A much longer hold is a factory reset. Being at the device is the authentication.
+        if (CONFIG_BLUEPAD32_OTA_FACTORY_RESET_HOLD_MS > 0 &&
+            button_held_ms >= CONFIG_BLUEPAD32_OTA_FACTORY_RESET_HOLD_MS && !button_factory_fired) {
+            button_factory_fired = true;
+            logi("OTA: button held %u ms, factory reset\n", (unsigned)button_held_ms);
+            uni_ota_factory_reset();
+        }
     } else {
         button_held_ms = 0;
         button_fired = false;
+        button_factory_fired = false;
     }
 #endif
     btstack_run_loop_set_timer(ts, BUTTON_POLL_MS);
@@ -213,6 +230,7 @@ static void abort_session(void) {
     }
     g.state = STATE_IDLE;
     g.client = HCI_CON_HANDLE_INVALID;
+    uni_bt_nus_gate_hold(false);
 }
 
 static void on_reboot(btstack_timer_source_t* ts) {
@@ -223,6 +241,10 @@ static void on_reboot(btstack_timer_source_t* ts) {
 static void on_nonce_expired(btstack_timer_source_t* ts) {
     ARG_UNUSED(ts);
     g.nonce_valid = false;
+}
+
+static const esp_partition_t* factory_partition(void) {
+    return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
 }
 
 static const char* auth_modes(void) {
@@ -243,9 +265,9 @@ static void cmd_status(hci_con_handle_t client) {
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
     if (running)
         esp_ota_get_state_partition(running, &st);
-    reply(client, "OTA status armed=%d arm_left=%u state=%s auth=%s running=%s ver=%s pending_verify=%d\n", g.armed,
-          (unsigned)g.arm_left_s, g.state == STATE_IDLE ? "idle" : "receiving", auth_modes(),
-          running ? running->label : "?", desc.version, st == ESP_OTA_IMG_PENDING_VERIFY);
+    reply(client, "OTA status armed=%d arm_left=%u state=%s auth=%s running=%s ver=%s pending_verify=%d factory=%d\n",
+          g.armed, (unsigned)g.arm_left_s, g.state == STATE_IDLE ? "idle" : "receiving", auth_modes(),
+          running ? running->label : "?", desc.version, st == ESP_OTA_IMG_PENDING_VERIFY, factory_partition() != NULL);
 }
 
 static void cmd_challenge(hci_con_handle_t client) {
@@ -354,6 +376,7 @@ static void cmd_begin(hci_con_handle_t client, char* size_s, char* sha_s, char* 
     }
 
     g.state = STATE_RECEIVING;
+    uni_bt_nus_gate_hold(true);  // don't close the BLE access gate on the client mid-transfer
     g.client = client;
     g.partition = part;
     g.handle = handle;
@@ -383,6 +406,7 @@ static void cmd_end(hci_con_handle_t client) {
     esp_err_t err = esp_ota_end(g.handle);  // also validates the image
     g.state = STATE_IDLE;
     g.client = HCI_CON_HANDLE_INVALID;
+    uni_bt_nus_gate_hold(false);
     if (!sha_ok) {
         reply(client, "OTA err sha256 mismatch\n");
         return;
@@ -401,6 +425,82 @@ static void cmd_end(hci_con_handle_t client) {
     reboot_timer.process = &on_reboot;
     btstack_run_loop_set_timer(&reboot_timer, REBOOT_DELAY_MS);
     btstack_run_loop_add_timer(&reboot_timer);
+}
+
+//
+// Factory reset
+//
+static void on_factory_reboot(btstack_timer_source_t* ts) {
+    ARG_UNUSED(ts);
+    uni_system_reboot();
+}
+
+bool uni_ota_factory_reset(void) {
+    if (g.state != STATE_IDLE)
+        abort_session();
+
+    const esp_partition_t* otadata = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+    bool to_factory = factory_partition() != NULL;
+    // With otadata erased the bootloader runs the factory app, or the first OTA slot if there is no factory app.
+    if (otadata && esp_partition_erase_range(otadata, 0, otadata->size) != ESP_OK)
+        return false;
+    // Stored settings: Bluetooth bonds, the NuS access latch, everything else in NVS.
+    nvs_flash_deinit();
+    if (nvs_flash_erase() != ESP_OK)
+        return false;
+
+    logi("OTA: factory reset done (%s), rebooting\n", to_factory ? "factory image" : "settings only");
+    uni_ota_disarm();
+    reboot_timer.process = &on_factory_reboot;
+    btstack_run_loop_set_timer(&reboot_timer, REBOOT_DELAY_MS);
+    btstack_run_loop_add_timer(&reboot_timer);
+    return true;
+}
+
+// "ota factory-reset [<hmac>]": same policy as "ota begin". hmac = HMAC-SHA256(psk, nonce || "factory-reset").
+static void cmd_factory_reset(hci_con_handle_t client, char* hmac_s) {
+    if (g.state != STATE_IDLE) {
+        reply(client, "OTA err busy\n");
+        return;
+    }
+    bool authed = hmac_s != NULL;
+    if (authed) {
+        bool nonce_was_valid = g.nonce_valid;
+        g.nonce_valid = false;  // single use
+        if (!ALLOW_AUTH) {
+            reply(client, "OTA err auth disabled\n");
+            return;
+        }
+        if (!nonce_was_valid) {
+            reply(client, "OTA err no challenge\n");
+            return;
+        }
+        uint8_t given[32], mac[32];
+        static const char kMsg[] = "factory-reset";
+        uint8_t msg[NONCE_LEN + sizeof(kMsg) - 1];
+        memcpy(msg, g.nonce, NONCE_LEN);
+        memcpy(msg + NONCE_LEN, kMsg, sizeof(kMsg) - 1);
+        const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+        if (!hex_decode(hmac_s, given, sizeof(given)) ||
+            mbedtls_md_hmac(info, (const uint8_t*)CONFIG_BLUEPAD32_OTA_PSK, strlen(CONFIG_BLUEPAD32_OTA_PSK), msg,
+                            sizeof(msg), mac) != 0 ||
+            !ct_equal(mac, given, sizeof(mac))) {
+            reply(client, "OTA err auth failed\n");
+            return;
+        }
+    } else if (!ALLOW_UNAUTH) {
+        reply(client, "OTA err auth required\n");
+        return;
+    }
+    if ((!authed || REQUIRE_ARM_FOR_AUTH) && !g.armed) {
+        reply(client, "OTA err not armed\n");
+        return;
+    }
+    if (!uni_ota_factory_reset()) {
+        reply(client, "OTA err factory reset failed\n");
+        return;
+    }
+    reply(client, "OTA done factory-reset mode=%s\n", factory_partition() ? "factory" : "settings");
 }
 
 bool uni_ota_handle_line(hci_con_handle_t client, const char* line) {
@@ -427,6 +527,8 @@ bool uni_ota_handle_line(hci_con_handle_t client, const char* line) {
         cmd_begin(client, a, b, c);
     } else if (strcasecmp(cmd, "end") == 0) {
         cmd_end(client);
+    } else if (strcasecmp(cmd, "factory-reset") == 0) {
+        cmd_factory_reset(client, strtok_r(NULL, " \t", &save));
     } else if (strcasecmp(cmd, "abort") == 0) {
         abort_session();
         reply(client, "OTA ok aborted\n");
