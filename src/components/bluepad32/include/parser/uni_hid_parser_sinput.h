@@ -4,6 +4,7 @@
 #ifndef UNI_HID_PARSER_SINPUT_H
 #define UNI_HID_PARSER_SINPUT_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "parser/uni_hid_parser.h"
@@ -15,5 +16,27 @@
 void uni_hid_parser_sinput_setup(struct uni_hid_device_s* d);
 void uni_hid_parser_sinput_init_report(struct uni_hid_device_s* d);
 void uni_hid_parser_sinput_parse_input_report(struct uni_hid_device_s* d, const uint8_t* report, uint16_t len);
+// leds: Bluepad32 player-LED bitmask; the lowest set bit selects the SInput player index (bit 0 -> player 1).
+void uni_hid_parser_sinput_set_player_leds(struct uni_hid_device_s* d, uint8_t leds);
+void uni_hid_parser_sinput_set_lightbar_color(struct uni_hid_device_s* d, uint8_t r, uint8_t g, uint8_t b);
+
+// Capability bits from the feature response (command 0x02), byte 0 and byte 1.
+#define UNI_SINPUT_CAPS0_RUMBLE 0x01
+#define UNI_SINPUT_CAPS0_PLAYER_LEDS 0x02
+#define UNI_SINPUT_CAPS0_ACCEL 0x04
+#define UNI_SINPUT_CAPS0_GYRO 0x08
+#define UNI_SINPUT_CAPS0_LEFT_STICK 0x10
+#define UNI_SINPUT_CAPS0_RIGHT_STICK 0x20
+#define UNI_SINPUT_CAPS0_LEFT_TRIGGER 0x40
+#define UNI_SINPUT_CAPS0_RIGHT_TRIGGER 0x80
+#define UNI_SINPUT_CAPS1_TOUCHPAD 0x01
+#define UNI_SINPUT_CAPS1_RGB 0x02
+#define UNI_SINPUT_CAPS1_HANDHELD 0x04
+
+// Returns false until the device has answered the feature request.
+bool uni_hid_parser_sinput_get_features(struct uni_hid_device_s* d,
+                                        uint16_t* protocol_version,
+                                        uint8_t* caps0,
+                                        uint8_t* caps1);
 
 #endif  // UNI_HID_PARSER_SINPUT_H

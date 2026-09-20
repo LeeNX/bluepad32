@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // SInput HID gamepads (Handheld Legend). Spec: https://docs.handheldlegend.com/s/sinput
 //
-// Phase 1: input only. Parses the fixed-layout 64-byte input report (ID 0x01): buttons, sticks, triggers, battery.
-// Not yet implemented: feature discovery (command 0x02), IMU, touchpads, haptics, player LEDs, RGB.
+// Input: the fixed-layout 64-byte input report (ID 0x01): buttons, sticks, triggers, battery.
+// Commands (output report 0x03, response as input report 0x02): feature discovery (0x02), player LED (0x03), RGB (0x04).
+// Not yet implemented: IMU, touchpads, haptics.
 //
 // Byte offsets follow SDL's SInput HIDAPI driver (SDL_hidapi_sinput.c). Bluepad32's BLE path delivers the report
 // with the Report ID as report[0], so the offsets below include it.
 
 #include "parser/uni_hid_parser_sinput.h"
+
+#include <string.h>
 
 #include "controller/uni_controller.h"
 #include "uni_common.h"
@@ -60,6 +63,135 @@
 #define PLUG_CHARGED 3
 #define PLUG_ON_BATTERY 4
 
+#define SINPUT_REPORT_ID_COMMAND_IN 0x02
+#define SINPUT_REPORT_ID_COMMAND_OUT 0x03
+#define SINPUT_CMD_FEATURES 0x02
+#define SINPUT_CMD_PLAYER_LED 0x03
+#define SINPUT_CMD_RGB 0x04
+// Output report 0x03 is 48 bytes on the wire; the Report ID is passed separately, so the payload is 47.
+#define SINPUT_CMD_PAYLOAD_LEN 47
+// Feature response: report[0]=0x02, report[1]=0x02, report[2..3]=protocol version, report[4]=caps0, report[5]=caps1.
+#define SINPUT_FEATURES_MIN_LEN 6
+#define SINPUT_FEATURES_TIMEOUT_MS 2000
+
+// BLE only allows one GATT write in flight, so commands go through a small paced queue.
+#define SINPUT_CMD_QUEUE_LEN 4
+#define SINPUT_CMD_MAX_ARGS 4
+#define SINPUT_CMD_GAP_MS 30
+#define SINPUT_CMD_RETRY_MS 50
+#define SINPUT_CMD_MAX_RETRIES 20
+
+typedef struct {
+    uint8_t len;
+    uint8_t data[1 + SINPUT_CMD_MAX_ARGS];  // command byte + arguments
+} sinput_cmd_t;
+
+typedef struct sinput_instance_s {
+    btstack_timer_source_t pump_timer;
+    btstack_timer_source_t features_timer;
+    sinput_cmd_t queue[SINPUT_CMD_QUEUE_LEN];
+    uint8_t head;
+    uint8_t count;
+    uint8_t retries;
+    bool pump_scheduled;
+    bool ready_done;
+    bool features_valid;
+    uint16_t protocol_version;
+    uint8_t caps0;
+    uint8_t caps1;
+} sinput_instance_t;
+_Static_assert(sizeof(sinput_instance_t) < HID_DEVICE_MAX_PARSER_DATA, "SInput instance too big");
+
+static sinput_instance_t* get_sinput_instance(uni_hid_device_t* d) {
+    return (sinput_instance_t*)&d->parser_data[0];
+}
+
+static void schedule_pump(uni_hid_device_t* d, uint32_t delay_ms);
+
+static void on_pump(btstack_timer_source_t* ts) {
+    uni_hid_device_t* d = ts->context;
+    sinput_instance_t* ins = get_sinput_instance(d);
+    ins->pump_scheduled = false;
+    if (ins->count == 0)
+        return;
+
+    const sinput_cmd_t* c = &ins->queue[ins->head];
+    uint8_t payload[SINPUT_CMD_PAYLOAD_LEN] = {0};
+    memcpy(payload, c->data, c->len);
+
+    uint8_t status = hids_host_send_write_report(d->hids_cid, SINPUT_REPORT_ID_COMMAND_OUT, HID_REPORT_TYPE_OUTPUT,
+                                                   payload, sizeof(payload));
+    if (status == ERROR_CODE_COMMAND_DISALLOWED && ins->retries < SINPUT_CMD_MAX_RETRIES) {
+        // A previous write is still in flight.
+        ins->retries++;
+        schedule_pump(d, SINPUT_CMD_RETRY_MS);
+        return;
+    }
+    if (status != ERROR_CODE_SUCCESS)
+        logi("SInput: command 0x%02x failed, status=%#x\n", c->data[0], status);
+
+    ins->retries = 0;
+    ins->head = (ins->head + 1) % SINPUT_CMD_QUEUE_LEN;
+    ins->count--;
+    if (ins->count > 0)
+        schedule_pump(d, SINPUT_CMD_GAP_MS);
+}
+
+static void schedule_pump(uni_hid_device_t* d, uint32_t delay_ms) {
+    sinput_instance_t* ins = get_sinput_instance(d);
+    if (ins->pump_scheduled)
+        return;
+    ins->pump_scheduled = true;
+    ins->pump_timer.process = &on_pump;
+    ins->pump_timer.context = d;
+    btstack_run_loop_set_timer(&ins->pump_timer, delay_ms);
+    btstack_run_loop_add_timer(&ins->pump_timer);
+}
+
+static void enqueue_command(uni_hid_device_t* d, const uint8_t* data, uint8_t len) {
+    sinput_instance_t* ins = get_sinput_instance(d);
+    if (len == 0 || len > sizeof(ins->queue[0].data))
+        return;
+    if (ins->count == SINPUT_CMD_QUEUE_LEN) {
+        loge("SInput: command queue full, dropping command 0x%02x\n", data[0]);
+        return;
+    }
+    sinput_cmd_t* c = &ins->queue[(ins->head + ins->count) % SINPUT_CMD_QUEUE_LEN];
+    c->len = len;
+    memcpy(c->data, data, len);
+    ins->count++;
+    schedule_pump(d, 0);
+}
+
+static void finish_setup(uni_hid_device_t* d) {
+    sinput_instance_t* ins = get_sinput_instance(d);
+    if (ins->ready_done)
+        return;
+    ins->ready_done = true;
+    btstack_run_loop_remove_timer(&ins->features_timer);
+    uni_hid_device_set_ready_complete(d);
+}
+
+static void on_features_timeout(btstack_timer_source_t* ts) {
+    uni_hid_device_t* d = ts->context;
+    logi("SInput: no feature response, continuing without it\n");
+    finish_setup(d);
+}
+
+static void parse_features_response(uni_hid_device_t* d, const uint8_t* report, uint16_t len) {
+    if (len < SINPUT_FEATURES_MIN_LEN) {
+        loge("SInput: feature response too short; got %d, want >= %d\n", len, SINPUT_FEATURES_MIN_LEN);
+        return;
+    }
+    sinput_instance_t* ins = get_sinput_instance(d);
+    ins->protocol_version = (uint16_t)(report[2] | (report[3] << 8));
+    ins->caps0 = report[4];
+    ins->caps1 = report[5];
+    ins->features_valid = true;
+    logi("SInput: protocol=%u caps0=0x%02x caps1=0x%02x\n", ins->protocol_version, ins->caps0, ins->caps1);
+    finish_setup(d);
+}
+
 static inline int16_t read_s16(const uint8_t* data, int idx) {
     return (int16_t)(data[idx] | (data[idx + 1] << 8));
 }
@@ -80,18 +212,73 @@ static inline int32_t trigger_to_pedal(int16_t v) {
 }
 
 void uni_hid_parser_sinput_setup(struct uni_hid_device_s* d) {
-    uni_hid_device_set_ready_complete(d);
+    sinput_instance_t* ins = get_sinput_instance(d);
+    memset(ins, 0, sizeof(*ins));
+
+    // Ask for the device's features. The device is "ready" once it answers, or after a timeout for devices that don't.
+    const uint8_t cmd = SINPUT_CMD_FEATURES;
+    enqueue_command(d, &cmd, 1);
+
+    ins->features_timer.process = &on_features_timeout;
+    ins->features_timer.context = d;
+    btstack_run_loop_set_timer(&ins->features_timer, SINPUT_FEATURES_TIMEOUT_MS);
+    btstack_run_loop_add_timer(&ins->features_timer);
 }
 
 void uni_hid_parser_sinput_init_report(struct uni_hid_device_s* d) {
-    // Each report contains the full state.
-    uni_controller_t* ctl = &d->controller;
-    memset(ctl, 0, sizeof(*ctl));
-    ctl->klass = UNI_CONTROLLER_CLASS_GAMEPAD;
-    ctl->battery = 255;  // Not available, until a report says otherwise.
+    // Called before every report, including command responses, so it must not wipe the gamepad state.
+    // State reports overwrite every field they own.
+    d->controller.klass = UNI_CONTROLLER_CLASS_GAMEPAD;
+}
+
+void uni_hid_parser_sinput_set_player_leds(struct uni_hid_device_s* d, uint8_t leds) {
+    sinput_instance_t* ins = get_sinput_instance(d);
+    if (ins->features_valid && !(ins->caps0 & UNI_SINPUT_CAPS0_PLAYER_LEDS)) {
+        logd("SInput: device has no player LEDs\n");
+        return;
+    }
+    uint8_t idx = 0;
+    for (int i = 0; i < 8; i++) {
+        if (leds & (1 << i)) {
+            idx = (uint8_t)(i + 1);
+            break;
+        }
+    }
+    const uint8_t cmd[] = {SINPUT_CMD_PLAYER_LED, idx};
+    enqueue_command(d, cmd, sizeof(cmd));
+}
+
+void uni_hid_parser_sinput_set_lightbar_color(struct uni_hid_device_s* d, uint8_t r, uint8_t g, uint8_t b) {
+    sinput_instance_t* ins = get_sinput_instance(d);
+    if (ins->features_valid && !(ins->caps1 & UNI_SINPUT_CAPS1_RGB)) {
+        logd("SInput: device has no RGB\n");
+        return;
+    }
+    const uint8_t cmd[] = {SINPUT_CMD_RGB, r, g, b};
+    enqueue_command(d, cmd, sizeof(cmd));
+}
+
+bool uni_hid_parser_sinput_get_features(struct uni_hid_device_s* d,
+                                        uint16_t* protocol_version,
+                                        uint8_t* caps0,
+                                        uint8_t* caps1) {
+    sinput_instance_t* ins = get_sinput_instance(d);
+    if (!ins->features_valid)
+        return false;
+    *protocol_version = ins->protocol_version;
+    *caps0 = ins->caps0;
+    *caps1 = ins->caps1;
+    return true;
 }
 
 void uni_hid_parser_sinput_parse_input_report(struct uni_hid_device_s* d, const uint8_t* report, uint16_t len) {
+    if (len >= 2 && report[0] == SINPUT_REPORT_ID_COMMAND_IN) {
+        if (report[1] == SINPUT_CMD_FEATURES)
+            parse_features_response(d, report, len);
+        else
+            logd("SInput: ignoring command response 0x%02x\n", report[1]);
+        return;
+    }
     if (len < 1 || report[0] != SINPUT_REPORT_ID_INPUT) {
         logd("SInput: ignoring report id=0x%02x len=%d\n", len ? report[0] : 0, len);
         return;
@@ -141,6 +328,8 @@ void uni_hid_parser_sinput_parse_input_report(struct uni_hid_device_s* d, const 
     gp->throttle = trigger_to_pedal(read_s16(report, IDX_RIGHT_TRIGGER));
 
     // Battery: 0..100 % -> 0..254. "No battery" (wired) leaves it as "not available".
+    d->controller.klass = UNI_CONTROLLER_CLASS_GAMEPAD;
+    d->controller.battery = 255;
     const uint8_t plug = report[IDX_PLUG_STATUS];
     if (plug == PLUG_NO_BATTERY) {
         d->controller.battery = 255;

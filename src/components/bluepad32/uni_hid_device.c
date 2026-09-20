@@ -753,6 +753,8 @@ static void setup_report_parser(uni_hid_device_t* d) {
                 .setup = uni_hid_parser_sinput_setup,
                 .init_report = uni_hid_parser_sinput_init_report,
                 .parse_input_report = uni_hid_parser_sinput_parse_input_report,
+                .set_player_leds = uni_hid_parser_sinput_set_player_leds,
+                .set_lightbar_color = uni_hid_parser_sinput_set_lightbar_color,
             };
             logi("Device detected as SInput: 0x%02x\n", type);
             break;
