@@ -151,21 +151,40 @@ static struct {
 } gate;
 static btstack_timer_source_t gate_tick_timer;
 static btstack_timer_source_t gate_poll_timer;
+static btstack_timer_source_t gate_drop_timer;
+// Time between telling clients the gate closed and disconnecting them, so the text gets out first.
+#define GATE_DROP_DELAY_MS 600
 
 static bool gate_wanted(void) {
     return gate.latched || gate.switch_on || gate.hold || gate.window_forever || gate.window_left_s > 0;
 }
 
-static void gate_apply(void) {
+static void on_gate_drop(btstack_timer_source_t* ts) {
+    ARG_UNUSED(ts);
+    if (gate.open)  // opened again in the meantime
+        return;
+    // Drop every central that connected to the BLE service. Gamepad links are not in this table.
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        if (clients[i].handle != HCI_CON_HANDLE_INVALID)
+            gap_disconnect(clients[i].handle);
+}
+
+// `why` says what closed the gate; clients are told before they are disconnected.
+static void gate_apply(const char* why) {
     bool want = gate_wanted();
     if (want != gate.open) {
         gate.open = want;
-        logi("NuS gate %s\n", want ? "open" : "closed");
+        logi("NuS gate %s%s%s\n", want ? "open" : "closed", why ? ": " : "", why ? why : "");
         if (!want) {
-            // Drop every central that connected to the BLE service. Gamepad links are not in this table.
-            for (int i = 0; i < MAX_CLIENTS; i++)
-                if (clients[i].handle != HCI_CON_HANDLE_INVALID)
-                    gap_disconnect(clients[i].handle);
+            if (uni_bt_nus_subscriber_count() > 0)
+                uni_bt_nus_printf(HCI_CON_HANDLE_INVALID,
+                                  "NuS gate closed (%s): disconnecting. Open it again with the button or the "
+                                  "console.\n",
+                                  why ? why : "closed");
+            btstack_run_loop_remove_timer(&gate_drop_timer);
+            gate_drop_timer.process = &on_gate_drop;
+            btstack_run_loop_set_timer(&gate_drop_timer, GATE_DROP_DELAY_MS);
+            btstack_run_loop_add_timer(&gate_drop_timer);
         }
     }
     uni_bt_service_update_advertising();
@@ -194,7 +213,7 @@ static void on_gate_tick(btstack_timer_source_t* ts) {
     if (gate.window_left_s > 0) {
         gate.window_left_s--;
         if (gate.window_left_s == 0)
-            gate_apply();
+            gate_apply("time is up");
     }
     btstack_run_loop_set_timer(ts, 1000);
     btstack_run_loop_add_timer(ts);
@@ -209,7 +228,7 @@ static void on_gate_poll(btstack_timer_source_t* ts) {
 #endif
     if (on != gate.switch_on) {
         gate.switch_on = on;
-        gate_apply();
+        gate_apply("switch turned off");
     }
 #endif
 #if CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO >= 0
@@ -280,7 +299,7 @@ void uni_bt_nus_gate_open(uint32_t seconds) {
         gate.window_left_s = seconds;
     }
     logi("NuS gate: open request (%us)\n", (unsigned)seconds);
-    gate_apply();
+    gate_apply(NULL);
 }
 
 void uni_bt_nus_gate_close(void) {
@@ -290,7 +309,7 @@ void uni_bt_nus_gate_close(void) {
         gate.latched = false;
         gate_latch_store(false);
     }
-    gate_apply();
+    gate_apply("closed on request");
 }
 
 void uni_bt_nus_gate_set_latch(bool latched) {
@@ -298,7 +317,7 @@ void uni_bt_nus_gate_set_latch(bool latched) {
         return;
     gate.latched = latched;
     gate_latch_store(latched);
-    gate_apply();
+    gate_apply("latch cleared");
 }
 
 bool uni_bt_nus_gate_is_latched(void) {
@@ -309,7 +328,7 @@ void uni_bt_nus_gate_hold(bool hold) {
     if (gate.hold == hold)
         return;
     gate.hold = hold;
-    gate_apply();
+    gate_apply("the transfer is over");
 }
 
 uint32_t uni_bt_nus_gate_seconds_left(void) {
