@@ -18,6 +18,9 @@ void uni_bt_service_deinit(void);
 bool uni_bt_service_is_enabled();
 void uni_bt_service_set_enabled(bool enabled);
 
+// Re-evaluates whether to advertise. Called when a client (dis)connects or the access gate changes.
+void uni_bt_service_update_advertising(void);
+
 // Callbacks from uni_hid_device that will be notified to the BLE client.
 void uni_bt_service_on_device_ready(const uni_hid_device_t* d);
 void uni_bt_service_on_device_connected(const uni_hid_device_t* d);

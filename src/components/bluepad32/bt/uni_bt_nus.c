@@ -6,7 +6,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <driver/gpio.h>
+#include <nvs.h>
+
 #include "bt/uni_bt_service.gatt.h"
+#include "bt/uni_bt_service.h"
 #include "sdkconfig.h"
 #include "uni_common.h"
 #include "uni_log.h"
@@ -113,10 +117,231 @@ static void enqueue(nus_client_t* c, const uint8_t* data, uint16_t len) {
     request_send(c);
 }
 
+//
+// Access gate
+//
+#ifdef CONFIG_BLUEPAD32_BLE_NUS_GATE
+
+#ifndef CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO
+#define CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO -1
+#endif
+#ifndef CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO
+#define CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO -1
+#endif
+#ifndef CONFIG_BLUEPAD32_BLE_NUS_BUTTON_HOLD_MS
+#define CONFIG_BLUEPAD32_BLE_NUS_BUTTON_HOLD_MS 1000
+#endif
+#ifndef CONFIG_BLUEPAD32_BLE_NUS_OPEN_SECONDS
+#define CONFIG_BLUEPAD32_BLE_NUS_OPEN_SECONDS 300
+#endif
+#define GATE_POLL_MS 50
+#define GATE_NVS_NAMESPACE "bp32_nus"
+#define GATE_NVS_KEY_LATCH "latch"
+
+static struct {
+    bool open;
+    bool latched;
+    bool switch_on;
+    bool hold;
+    bool window_forever;
+    uint32_t window_left_s;
+    uint32_t button_held_ms;
+    bool button_fired;
+} gate;
+static btstack_timer_source_t gate_tick_timer;
+static btstack_timer_source_t gate_poll_timer;
+
+static bool gate_wanted(void) {
+    return gate.latched || gate.switch_on || gate.hold || gate.window_forever || gate.window_left_s > 0;
+}
+
+static void gate_apply(void) {
+    bool want = gate_wanted();
+    if (want != gate.open) {
+        gate.open = want;
+        logi("NuS gate %s\n", want ? "open" : "closed");
+        if (!want) {
+            // Drop every central that connected to the BLE service. Gamepad links are not in this table.
+            for (int i = 0; i < MAX_CLIENTS; i++)
+                if (clients[i].handle != HCI_CON_HANDLE_INVALID)
+                    gap_disconnect(clients[i].handle);
+        }
+    }
+    uni_bt_service_update_advertising();
+}
+
+static void gate_latch_store(bool latched) {
+    nvs_handle_t h;
+    if (nvs_open(GATE_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK)
+        return;
+    nvs_set_u8(h, GATE_NVS_KEY_LATCH, latched);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static bool gate_latch_load(void) {
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(GATE_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK)
+        return false;
+    nvs_get_u8(h, GATE_NVS_KEY_LATCH, &v);
+    nvs_close(h);
+    return v != 0;
+}
+
+static void on_gate_tick(btstack_timer_source_t* ts) {
+    if (gate.window_left_s > 0) {
+        gate.window_left_s--;
+        if (gate.window_left_s == 0)
+            gate_apply();
+    }
+    btstack_run_loop_set_timer(ts, 1000);
+    btstack_run_loop_add_timer(ts);
+}
+
+static void on_gate_poll(btstack_timer_source_t* ts) {
+#if CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO >= 0
+#ifdef CONFIG_BLUEPAD32_BLE_NUS_SWITCH_ACTIVE_LOW
+    bool on = gpio_get_level(CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO) == 0;
+#else
+    bool on = gpio_get_level(CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO) == 1;
+#endif
+    if (on != gate.switch_on) {
+        gate.switch_on = on;
+        gate_apply();
+    }
+#endif
+#if CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO >= 0
+#ifdef CONFIG_BLUEPAD32_BLE_NUS_BUTTON_ACTIVE_LOW
+    bool pressed = gpio_get_level(CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO) == 0;
+#else
+    bool pressed = gpio_get_level(CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO) == 1;
+#endif
+    if (pressed) {
+        gate.button_held_ms += GATE_POLL_MS;
+        if (gate.button_held_ms >= CONFIG_BLUEPAD32_BLE_NUS_BUTTON_HOLD_MS && !gate.button_fired) {
+            gate.button_fired = true;
+            uni_bt_nus_gate_open(CONFIG_BLUEPAD32_BLE_NUS_OPEN_SECONDS);
+        }
+    } else {
+        gate.button_held_ms = 0;
+        gate.button_fired = false;
+    }
+#endif
+    btstack_run_loop_set_timer(ts, GATE_POLL_MS);
+    btstack_run_loop_add_timer(ts);
+}
+
+static void gate_init(void) {
+    memset(&gate, 0, sizeof(gate));
+    gate.latched = gate_latch_load();
+
+#if CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO >= 0 || CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO >= 0
+    gpio_config_t io = {.mode = GPIO_MODE_INPUT};
+    uint64_t mask = 0;
+#if CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO >= 0
+    mask |= 1ULL << CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO;
+#endif
+#if CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO >= 0
+    mask |= 1ULL << CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO;
+#endif
+    io.pin_bit_mask = mask;
+#if defined(CONFIG_BLUEPAD32_BLE_NUS_SWITCH_ACTIVE_LOW) || defined(CONFIG_BLUEPAD32_BLE_NUS_BUTTON_ACTIVE_LOW)
+    io.pull_up_en = GPIO_PULLUP_ENABLE;
+#endif
+    gpio_config(&io);
+#endif
+
+    btstack_run_loop_remove_timer(&gate_tick_timer);
+    gate_tick_timer.process = &on_gate_tick;
+    btstack_run_loop_set_timer(&gate_tick_timer, 1000);
+    btstack_run_loop_add_timer(&gate_tick_timer);
+    btstack_run_loop_remove_timer(&gate_poll_timer);
+    gate_poll_timer.process = &on_gate_poll;
+    btstack_run_loop_set_timer(&gate_poll_timer, GATE_POLL_MS);
+    btstack_run_loop_add_timer(&gate_poll_timer);
+
+    gate.open = gate_wanted();
+    logi("NuS gate: %s (latched=%d)\n", gate.open ? "open" : "closed", gate.latched);
+}
+
+bool uni_bt_nus_gate_is_open(void) {
+    return gate.open;
+}
+
+void uni_bt_nus_gate_open(uint32_t seconds) {
+    if (seconds == 0) {
+        gate.window_forever = true;
+    } else if (!gate.window_forever && seconds > gate.window_left_s) {
+        gate.window_left_s = seconds;
+    }
+    logi("NuS gate: open request (%us)\n", (unsigned)seconds);
+    gate_apply();
+}
+
+void uni_bt_nus_gate_close(void) {
+    gate.window_forever = false;
+    gate.window_left_s = 0;
+    if (gate.latched) {
+        gate.latched = false;
+        gate_latch_store(false);
+    }
+    gate_apply();
+}
+
+void uni_bt_nus_gate_set_latch(bool latched) {
+    if (gate.latched == latched)
+        return;
+    gate.latched = latched;
+    gate_latch_store(latched);
+    gate_apply();
+}
+
+bool uni_bt_nus_gate_is_latched(void) {
+    return gate.latched;
+}
+
+void uni_bt_nus_gate_hold(bool hold) {
+    if (gate.hold == hold)
+        return;
+    gate.hold = hold;
+    gate_apply();
+}
+
+uint32_t uni_bt_nus_gate_seconds_left(void) {
+    return gate.window_left_s;
+}
+
+#else  // !CONFIG_BLUEPAD32_BLE_NUS_GATE: always open
+
+static void gate_init(void) {}
+bool uni_bt_nus_gate_is_open(void) {
+    return true;
+}
+void uni_bt_nus_gate_open(uint32_t seconds) {
+    ARG_UNUSED(seconds);
+}
+void uni_bt_nus_gate_close(void) {}
+void uni_bt_nus_gate_set_latch(bool latched) {
+    ARG_UNUSED(latched);
+}
+bool uni_bt_nus_gate_is_latched(void) {
+    return false;
+}
+void uni_bt_nus_gate_hold(bool hold) {
+    ARG_UNUSED(hold);
+}
+uint32_t uni_bt_nus_gate_seconds_left(void) {
+    return 0;
+}
+
+#endif  // CONFIG_BLUEPAD32_BLE_NUS_GATE
+
 void uni_bt_nus_init(void) {
     memset(clients, 0, sizeof(clients));
     for (int i = 0; i < MAX_CLIENTS; i++)
         clients[i].handle = HCI_CON_HANDLE_INVALID;
+    gate_init();
 }
 
 void uni_bt_nus_set_rx_callback(uni_bt_nus_rx_callback_t cb) {
