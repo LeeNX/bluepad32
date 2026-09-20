@@ -31,10 +31,12 @@
 #define IDX_RIGHT_TRIGGER 17
 
 // buttons[0]
-#define B0_EAST 0x01
-#define B0_SOUTH 0x02
-#define B0_NORTH 0x04
-#define B0_WEST 0x08
+// Face buttons in A, B, X, Y order (bit 0 = south/A). SDL's driver names bit 0 "east" and bit 1 "south", but its
+// mapping string is a:b0,b:b1,x:b2,y:b3, i.e. bit 0 is A. Confirmed on hardware against ESP32-BLE-Gamepad's SInput mode.
+#define B0_SOUTH 0x01
+#define B0_EAST 0x02
+#define B0_WEST 0x04
+#define B0_NORTH 0x08
 #define B0_DPAD_UP 0x10
 #define B0_DPAD_DOWN 0x20
 #define B0_DPAD_LEFT 0x40
