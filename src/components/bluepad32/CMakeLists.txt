@@ -146,11 +146,12 @@ endif()
 
 # Valid for ESP-IDF only
 if(IDF_TARGET)
-    set(requires "nvs_flash" "btstack" "app_update" "esp_timer" "driver")
+    # Requirements are resolved before the sdkconfig is available, so "mbedtls" (used by uni_ota.c) can't depend on
+    # CONFIG_BLUEPAD32_OTA.
+    set(requires "nvs_flash" "btstack" "app_update" "esp_timer" "driver" "mbedtls")
 
     if(CONFIG_BLUEPAD32_OTA)
         list(APPEND srcs "uni_ota.c")
-        list(APPEND requires "mbedtls")
     endif()
 
     if("${IDF_VERSION_MAJOR}" GREATER_EQUAL 5)
