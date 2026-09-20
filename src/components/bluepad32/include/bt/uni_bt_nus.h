@@ -46,6 +46,11 @@ uint32_t uni_bt_nus_dropped_bytes(void);
 // Usable payload per notification for `client` (ATT MTU - 3), 0 if unknown.
 uint16_t uni_bt_nus_payload_size(hci_con_handle_t client);
 
+// Stop advertising for new centrals while something time-critical (a firmware transfer) runs. Connected centrals are
+// not affected. Independent of the access gate.
+void uni_bt_nus_pause_advertising(bool pause);
+bool uni_bt_nus_advertising_paused(void);
+
 // --- Access gate ---
 //
 // Anything that can connect to the BLE service (NuS, OTA, Bluepad32's own configuration characteristics) is a way in
