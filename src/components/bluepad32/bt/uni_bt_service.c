@@ -395,8 +395,7 @@ static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_
             uni_bt_nus_on_connected(att_event_connected_get_handle(packet));
             // A peripheral stops advertising once connected. Keep going while more clients fit, so that a second
             // host (e.g. a test rig) can connect while a gamepad, or another host, already is.
-            if (uni_bt_nus_has_free_slot())
-                gap_advertisements_enable(true);
+            uni_bt_service_update_advertising();
             // setup new
             ctx = connection_for_conn_handle(HCI_CON_HANDLE_INVALID);
             if (!ctx)
@@ -418,7 +417,7 @@ static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_
             break;
         case ATT_EVENT_DISCONNECTED:
             uni_bt_nus_on_disconnected(att_event_disconnected_get_handle(packet));
-            gap_advertisements_enable(true);
+            uni_bt_service_update_advertising();
             ctx = connection_for_conn_handle(att_event_disconnected_get_handle(packet));
             if (!ctx)
                 break;
@@ -443,6 +442,14 @@ static void uni_att_packet_handler(uint8_t packet_type, uint16_t channel, uint8_
             logi("BLE Service: Unsupported ATT_EVENT: %#x\n", hci_event_packet_get_type(packet));
             break;
     }
+}
+
+// Advertise only while the service is up, another client would fit, and the access gate is open (see uni_bt_nus.h).
+// With advertising off nothing can connect to the BLE service, NuS or OTA.
+void uni_bt_service_update_advertising(void) {
+    if (!service_enabled)
+        return;
+    gap_advertisements_enable(uni_bt_nus_has_free_slot() && uni_bt_nus_gate_is_open());
 }
 
 void uni_bt_service_deinit(void) {
@@ -480,7 +487,7 @@ void uni_bt_service_init(void) {
     gap_advertisements_set_params(adv_int_min, adv_int_max, adv_type, 0, null_addr, 0x07, 0x00);
     gap_advertisements_set_data(adv_data_len, (uint8_t*)adv_data);
     gap_scan_response_set_data(sizeof(scan_response_data), (uint8_t*)scan_response_data);
-    gap_advertisements_enable(true);
+    uni_bt_service_update_advertising();
 }
 
 bool uni_bt_service_is_enabled() {

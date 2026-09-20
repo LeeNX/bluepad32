@@ -133,6 +133,50 @@ menu "Bluepad32"
         The NuS code runs on the BTstack thread, which is the "main" task. Give it room: keep
         CONFIG_ESP_MAIN_TASK_STACK_SIZE at 6144 or more.
 
+    config BLUEPAD32_BLE_NUS_GATE
+        bool "Keep the BLE service closed until a physical action opens it"
+        default y
+        help
+        The BLE service (NuS, OTA, and Bluepad32's own configuration characteristics) lets anyone nearby connect.
+        With this set, the device does not advertise and cannot be connected to until the access gate is opened:
+        a switch, a button, the platform calling uni_bt_nus_gate_open(), or a persistent latch. See uni_bt_nus.h.
+
+        Turn it off only for devices where the BLE service should always be reachable.
+
+    config BLUEPAD32_BLE_NUS_SWITCH_GPIO
+        int "GPIO of a switch that opens the gate while it is on (-1 = none)"
+        range -1 48
+        default -1
+        depends on BLUEPAD32_BLE_NUS_GATE
+
+    config BLUEPAD32_BLE_NUS_SWITCH_ACTIVE_LOW
+        bool "The switch is on when the pin is low"
+        default y
+        depends on BLUEPAD32_BLE_NUS_GATE && BLUEPAD32_BLE_NUS_SWITCH_GPIO >= 0
+
+    config BLUEPAD32_BLE_NUS_BUTTON_GPIO
+        int "GPIO of a button that opens the gate for a while (-1 = none)"
+        range -1 48
+        default -1
+        depends on BLUEPAD32_BLE_NUS_GATE
+
+    config BLUEPAD32_BLE_NUS_BUTTON_ACTIVE_LOW
+        bool "The button is pressed when the pin is low"
+        default y
+        depends on BLUEPAD32_BLE_NUS_GATE && BLUEPAD32_BLE_NUS_BUTTON_GPIO >= 0
+
+    config BLUEPAD32_BLE_NUS_BUTTON_HOLD_MS
+        int "How long to hold the button, in ms"
+        range 100 10000
+        default 1000
+        depends on BLUEPAD32_BLE_NUS_GATE && BLUEPAD32_BLE_NUS_BUTTON_GPIO >= 0
+
+    config BLUEPAD32_BLE_NUS_OPEN_SECONDS
+        int "How long a button press keeps the gate open, in seconds"
+        range 5 86400
+        default 300
+        depends on BLUEPAD32_BLE_NUS_GATE
+
     config BLUEPAD32_BLE_NUS_TX_BUFFER_SIZE
         int "Nordic UART Service TX buffer size, per client"
         range 128 4096
