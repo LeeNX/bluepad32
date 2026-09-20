@@ -72,8 +72,9 @@ static void on_can_send(void* context) {
         return;
 
     uint16_t n = c->tx_len < c->payload ? c->tx_len : c->payload;
-    // Copy out of the ring buffer; a chunk can wrap around.
-    uint8_t chunk[256];
+    // Copy out of the ring buffer; a chunk can wrap around. Static: this runs on the BTstack thread only, and the
+    // BTstack thread's stack (the "main" task) is small.
+    static uint8_t chunk[256];
     if (n > sizeof(chunk))
         n = sizeof(chunk);
     for (uint16_t i = 0; i < n; i++)
@@ -98,8 +99,11 @@ static void request_send(nus_client_t* c) {
         return;
     c->can_send.callback = &on_can_send;
     c->can_send.context = c;
-    if (att_server_request_to_send_notification(&c->can_send, c->handle) == ERROR_CODE_SUCCESS)
-        c->notify_pending = true;
+    // BTstack can invoke the callback from inside this call when it can send right away, and the callback clears
+    // notify_pending. So set it first, and undo it only if the request was refused.
+    c->notify_pending = true;
+    if (att_server_request_to_send_notification(&c->can_send, c->handle) != ERROR_CODE_SUCCESS)
+        c->notify_pending = false;
 }
 
 static void enqueue(nus_client_t* c, const uint8_t* data, uint16_t len) {
