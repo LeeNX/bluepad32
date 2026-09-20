@@ -55,6 +55,13 @@ static nus_client_t* client_for_handle(hci_con_handle_t handle) {
     return NULL;
 }
 
+static nus_client_t* free_slot(void) {
+    for (int i = 0; i < MAX_CLIENTS; i++)
+        if (clients[i].handle == HCI_CON_HANDLE_INVALID)
+            return &clients[i];
+    return NULL;
+}
+
 static void on_can_send(void* context) {
     nus_client_t* c = (nus_client_t*)context;
     c->notify_pending = false;
@@ -183,7 +190,11 @@ bool uni_bt_nus_has_free_slot(void) {
 }
 
 void uni_bt_nus_on_connected(hci_con_handle_t handle) {
-    nus_client_t* c = client_for_handle(HCI_CON_HANDLE_INVALID);
+    // The ATT server also reports links where Bluepad32 is the central (its gamepads). Only peripheral-role links
+    // are NuS clients.
+    if (gap_get_role(handle) != HCI_ROLE_SLAVE)
+        return;
+    nus_client_t* c = free_slot();
     if (!c) {
         logi("NuS: no free slot for connection %#x\n", handle);
         return;
