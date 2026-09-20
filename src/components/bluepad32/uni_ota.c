@@ -18,6 +18,7 @@
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
 
+#include "bt/uni_bt.h"
 #include "bt/uni_bt_nus.h"
 #include "sdkconfig.h"
 #include "uni_common.h"
@@ -226,6 +227,24 @@ static void on_button_poll(btstack_timer_source_t* ts) {
 //
 // Session
 //
+// A transfer wants the radio to itself. The ESP32 shares it between the gamepad links, scanning for new gamepads,
+// advertising for new centrals and the NuS link doing the transfer; scanning in particular eats connection events.
+static bool quiet_was_scanning;
+
+static void set_quiet(bool quiet) {
+    if (quiet) {
+        quiet_was_scanning = uni_bt_is_scanning();
+        if (quiet_was_scanning)
+            uni_bt_stop_scanning_unsafe();
+        uni_bt_nus_pause_advertising(true);
+    } else {
+        uni_bt_nus_pause_advertising(false);
+        if (quiet_was_scanning)
+            uni_bt_start_scanning_and_autoconnect_unsafe();
+        quiet_was_scanning = false;
+    }
+}
+
 static void abort_session(void) {
     if (g.state == STATE_RECEIVING) {
         esp_ota_abort(g.handle);
@@ -234,6 +253,7 @@ static void abort_session(void) {
     g.state = STATE_IDLE;
     g.client = HCI_CON_HANDLE_INVALID;
     uni_bt_nus_gate_hold(false);
+    set_quiet(false);
 }
 
 static void on_reboot(btstack_timer_source_t* ts) {
@@ -380,6 +400,7 @@ static void cmd_begin(hci_con_handle_t client, char* size_s, char* sha_s, char* 
 
     g.state = STATE_RECEIVING;
     uni_bt_nus_gate_hold(true);  // don't close the BLE access gate on the client mid-transfer
+    set_quiet(true);
     g.client = client;
     g.partition = part;
     g.handle = handle;
@@ -410,6 +431,7 @@ static void cmd_end(hci_con_handle_t client) {
     g.state = STATE_IDLE;
     g.client = HCI_CON_HANDLE_INVALID;
     uni_bt_nus_gate_hold(false);
+    set_quiet(false);
     if (!sha_ok) {
         reply(client, "OTA err sha256 mismatch\n");
         return;
