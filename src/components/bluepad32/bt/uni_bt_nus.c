@@ -236,8 +236,11 @@ static void on_gate_poll(btstack_timer_source_t* ts) {
 }
 
 static void gate_init(void) {
-    memset(&gate, 0, sizeof(gate));
+    // Don't clear the gate: the platform (or an OTA arm) may have opened it before the BLE service came up, and that
+    // must not be lost. Only the persisted latch and the button state are (re)loaded here.
     gate.latched = gate_latch_load();
+    gate.button_held_ms = 0;
+    gate.button_fired = false;
 
 #if CONFIG_BLUEPAD32_BLE_NUS_SWITCH_GPIO >= 0 || CONFIG_BLUEPAD32_BLE_NUS_BUTTON_GPIO >= 0
     gpio_config_t io = {.mode = GPIO_MODE_INPUT};
