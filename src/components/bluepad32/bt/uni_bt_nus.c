@@ -44,6 +44,7 @@ typedef struct {
 } nus_client_t;
 
 static nus_client_t clients[MAX_CLIENTS];
+static bool advertising_paused;
 static uni_bt_nus_rx_callback_t rx_callback;
 static uni_bt_nus_subscribe_callback_t subscribe_callback;
 static uint32_t dropped_bytes;
@@ -406,6 +407,17 @@ int uni_bt_nus_subscriber_count(void) {
         if (clients[i].handle != HCI_CON_HANDLE_INVALID && clients[i].subscribed)
             n++;
     return n;
+}
+
+void uni_bt_nus_pause_advertising(bool pause) {
+    if (advertising_paused == pause)
+        return;
+    advertising_paused = pause;
+    uni_bt_service_update_advertising();
+}
+
+bool uni_bt_nus_advertising_paused(void) {
+    return advertising_paused;
 }
 
 uint32_t uni_bt_nus_dropped_bytes(void) {
